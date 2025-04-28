@@ -26,6 +26,10 @@ class CameraManager: NSObject {
     private let minZoom: CGFloat = 1.0
     private let maxZoom: CGFloat = 5.0
     
+    // Heights for UI elements (defaults that will be updated)
+    var headerHeight: CGFloat = 120
+    var controlBarHeight: CGFloat = 150
+    
     // Check if camera is available
     var isCameraAvailable: Bool {
         AVCaptureDevice.authorizationStatus(for: .video) == .authorized
@@ -171,44 +175,31 @@ class CameraManager: NSObject {
         
         // Get screen dimensions in portrait orientation
         let screenSize = UIScreen.main.bounds.size
-        let screenAspectRatio = screenSize.width / screenSize.height
         
-        // Step 1: First crop to match screen width
+        // Calculate visible preview area (screen minus UI elements)
+        let visibleHeight = screenSize.height - (headerHeight + controlBarHeight)
+        let visibleWidth = screenSize.width
+        let visibleAspectRatio = visibleWidth / visibleHeight
+        
+        // Step 1: Crop to match the visible preview area
         var rect: CGRect
-        if imageSize.width / imageSize.height > screenAspectRatio {
-            // Image is wider than screen
-            let targetWidth = imageSize.height * screenAspectRatio
+        if imageSize.width / imageSize.height > visibleAspectRatio {
+            // Image is wider than visible area
+            let targetWidth = imageSize.height * visibleAspectRatio
             let x = (imageSize.width - targetWidth) / 2
             rect = CGRect(x: x, y: 0, width: targetWidth, height: imageSize.height)
         } else {
-            // Image is taller than screen
-            let targetHeight = imageSize.width / screenAspectRatio
+            // Image is taller than visible area
+            let targetHeight = imageSize.width / visibleAspectRatio
             let y = (imageSize.height - targetHeight) / 2
             rect = CGRect(x: 0, y: y, width: imageSize.width, height: targetHeight)
         }
         
-        guard let firstCropImage = imageToProcess.cgImage?.cropping(to: rect) else {
+        guard let croppedImage = imageToProcess.cgImage?.cropping(to: rect) else {
             return imageToProcess
         }
         
-        // Step 2: Now crop to 4:3 aspect ratio
-        let firstCropSize = CGSize(width: firstCropImage.width, height: firstCropImage.height)
-        let targetAspectRatio: CGFloat = 4.0 / 3.0
-        
-        // Calculate height for 4:3 ratio based on width
-        let targetHeight = firstCropSize.width / targetAspectRatio
-        let yOffset = (firstCropSize.height - targetHeight) / 2
-        
-        // Create final crop rectangle
-        let finalRect = CGRect(x: 0, y: yOffset, 
-                              width: firstCropSize.width, 
-                              height: targetHeight)
-        
-        if let finalImage = firstCropImage.cropping(to: finalRect) {
-            return UIImage(cgImage: finalImage, scale: imageToProcess.scale, orientation: .up)
-        }
-        
-        return UIImage(cgImage: firstCropImage, scale: imageToProcess.scale, orientation: .up)
+        return UIImage(cgImage: croppedImage, scale: imageToProcess.scale, orientation: .up)
     }
     
     private func fixImageOrientation(_ image: UIImage) -> UIImage {
