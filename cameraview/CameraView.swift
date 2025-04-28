@@ -15,36 +15,41 @@ struct CameraView: View {
     @State private var showFocusIndicator = false
     @State private var currentPage = 1
     @State private var totalPages = 4
+    @State private var isViewAppeared = false
     
     var body: some View {
         ZStack {
             // Camera preview
             Group {
                 if cameraManager.isCameraAvailable {
-                    CameraPreview(session: cameraManager.captureSession)
-                        .ignoresSafeArea()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .gesture(
-                            SpatialTapGesture()
-                                    .onEnded { tapValue in
-                                        let location = tapValue.location
-                                        focusPoint = location
-                                        cameraManager.focus(at: location, in: UIScreen.main.bounds.size)
-                                        showFocusIndicator = true
-                                        
-                                        Task {
-                                            try? await Task.sleep(for: .seconds(1))
-                                            showFocusIndicator = false
-                                        }
+                    CameraPreview(
+                        session: cameraManager.captureSession,
+                        headerHeight: cameraManager.headerHeight,
+                        controlBarHeight: cameraManager.controlBarHeight
+                    )
+                    .ignoresSafeArea()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .gesture(
+                        SpatialTapGesture()
+                                .onEnded { tapValue in
+                                    let location = tapValue.location
+                                    focusPoint = location
+                                    cameraManager.focus(at: location, in: UIScreen.main.bounds.size)
+                                    showFocusIndicator = true
+                                    
+                                    Task {
+                                        try? await Task.sleep(for: .seconds(1))
+                                        showFocusIndicator = false
                                     }
-                        )
-                        .gesture(
-                            // Pinch to zoom
-                            MagnificationGesture()
-                                .onChanged { value in
-                                    cameraManager.zoom(by: value)
                                 }
-                        )
+                    )
+                    .gesture(
+                        // Pinch to zoom
+                        MagnificationGesture()
+                            .onChanged { value in
+                                cameraManager.zoom(by: value)
+                            }
+                    )
                 } else {
                     Color.black
                         .ignoresSafeArea()
@@ -99,6 +104,19 @@ struct CameraView: View {
                         .fill(.black.opacity(0.6))
                         .ignoresSafeArea(edges: .top)
                 )
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(key: HeaderHeightPreferenceKey.self, value: geometry.size.height)
+                            .onPreferenceChange(HeaderHeightPreferenceKey.self) { height in
+                                if height > 0 {
+                                    cameraManager.headerHeight = height
+                                    updateMeasurementStatus()
+                                    print("Updated header height: \(height)")
+                                }
+                            }
+                    }
+                )
                 
                 Spacer()
                 
@@ -130,6 +148,12 @@ struct CameraView: View {
                         
                         // Capture button
                         Button {
+                            print("Capture button tapped")
+                            // Disable the UI during capture
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                            impactFeedback.impactOccurred()
+                            
+                            // Capture the photo
                             cameraManager.capturePhoto()
                         } label: {
                             Circle()
@@ -157,13 +181,70 @@ struct CameraView: View {
                         .fill(.black.opacity(0.6))
                         .ignoresSafeArea(edges: .bottom)
                 )
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(key: ControlBarHeightPreferenceKey.self, value: geometry.size.height)
+                            .onPreferenceChange(ControlBarHeightPreferenceKey.self) { height in
+                                if height > 0 {
+                                    cameraManager.controlBarHeight = height
+                                    updateMeasurementStatus()
+                                    print("Updated control bar height: \(height)")
+                                }
+                            }
+                    }
+                )
             }
         }
         .task {
-            await cameraManager.configure()
+            print("Camera view task started")
+            // Don't configure here since CameraModule already handles this
+            // This avoids the "Multiple audio/video AVCaptureInputs" error
+            // await cameraManager.configure()
+            
+            // Just ensure the camera is running, but don't reconfigure
+            if cameraManager.captureSession.isRunning == false {
+                cameraManager.restartCameraSession()
+            }
+        }
+        .onAppear {
+            print("Camera view appeared")
+            // Ensure the camera session is running when the view appears
+            if !isViewAppeared {
+                isViewAppeared = true
+                // No need to restart again here, just check if it's not running
+                if cameraManager.captureSession.isRunning == false {
+                    print("Camera session not running, restarting...")
+                    cameraManager.restartCameraSession()
+                }
+            }
         }
         .onDisappear {
             cameraManager.stop()
         }
+    }
+    
+    // Helper function to update measurement status
+    private func updateMeasurementStatus() {
+        // If both measurements are non-zero, mark as updated
+        if cameraManager.headerHeight > 0 && cameraManager.controlBarHeight > 0 {
+            cameraManager.uiMeasurementsUpdated = true
+            print("UI measurements updated - Header: \(cameraManager.headerHeight), Control: \(cameraManager.controlBarHeight)")
+        }
+    }
+}
+
+// Preference keys for view measurements
+struct HeaderHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct ControlBarHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

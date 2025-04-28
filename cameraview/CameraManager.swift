@@ -30,6 +30,13 @@ class CameraManager: NSObject {
     var headerHeight: CGFloat = 120
     var controlBarHeight: CGFloat = 150
     
+    // Add a property to track if values have been updated
+    var uiMeasurementsUpdated = false
+    
+    // Add properties for top and bottom crop amounts (as percentages of the image height)
+    var topCropPercentage: CGFloat = 0.20    // Default 20% from top
+    var bottomCropPercentage: CGFloat = 0.25 // Default 15% from bottom
+    
     // Check if camera is available
     var isCameraAvailable: Bool {
         AVCaptureDevice.authorizationStatus(for: .video) == .authorized
@@ -50,7 +57,12 @@ class CameraManager: NSObject {
     // Setup camera session
     func configure() async {
         // Avoid configuring twice
-        guard !isConfigured else { return }
+        guard !isConfigured else { 
+            print("Camera already configured, skipping configuration")
+            return 
+        }
+        
+        print("Starting camera configuration...")
         
         // Check permissions
         let hasPermission = await checkPermissions()
@@ -88,9 +100,24 @@ class CameraManager: NSObject {
                 self?.captureSession.startRunning()
             }
             
+            // Debug info
+            print("=== Camera Session Configuration ===")
+            print("Session preset: \(captureSession.sessionPreset.rawValue)")
+            print("Session running: \(captureSession.isRunning)")
+            print("Inputs: \(captureSession.inputs.count)")
+            print("Outputs: \(captureSession.outputs.count)")
+            if let connection = photoOutput.connection(with: .video) {
+                print("Video connection available: \(connection.isEnabled)")
+                print("Video orientation: \(connection.videoOrientation.rawValue)")
+            } else {
+                print("No video connection available")
+            }
+            print("===================================")
+            
             isConfigured = true
         } catch {
             self.error = .setupFailed
+            print("Camera setup failed with error: \(error.localizedDescription)")
         }
     }
     
@@ -102,10 +129,17 @@ class CameraManager: NSObject {
     
     // Capture a photo
     func capturePhoto() {
-        guard isConfigured, captureSession.isRunning else { return }
+        guard isConfigured, captureSession.isRunning else {
+            print("Cannot capture photo: session not configured or not running")
+            return
+        }
         
+        print("Attempting to capture photo...")
         let settings = AVCapturePhotoSettings()
         settings.photoQualityPrioritization = .quality
+        
+        // Force flash off to avoid issues
+        settings.flashMode = .off
         
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
@@ -167,52 +201,152 @@ class CameraManager: NSObject {
     // Add new property to store screen dimensions
     private var screenSize: CGSize = UIScreen.main.bounds.size
     
-    // Add new method to crop the image
-    private func cropImageToPreviewAspectRatio(_ image: UIImage) -> UIImage {
-        // First rotate the image to match device orientation if needed
-        let imageToProcess = fixImageOrientation(image)
-        let imageSize = imageToProcess.size
+    // Reset the capture session fully - removes all inputs/outputs
+    func resetCameraCompletely() {
+        print("Completely resetting camera session")
+        captureSession.beginConfiguration()
         
-        // Get screen dimensions in portrait orientation
-        let screenSize = UIScreen.main.bounds.size
-        
-        // Calculate visible preview area (screen minus UI elements)
-        let visibleHeight = screenSize.height - (headerHeight + controlBarHeight)
-        let visibleWidth = screenSize.width
-        let visibleAspectRatio = visibleWidth / visibleHeight
-        
-        // Step 1: Crop to match the visible preview area
-        var rect: CGRect
-        if imageSize.width / imageSize.height > visibleAspectRatio {
-            // Image is wider than visible area
-            let targetWidth = imageSize.height * visibleAspectRatio
-            let x = (imageSize.width - targetWidth) / 2
-            rect = CGRect(x: x, y: 0, width: targetWidth, height: imageSize.height)
-        } else {
-            // Image is taller than visible area
-            let targetHeight = imageSize.width / visibleAspectRatio
-            let y = (imageSize.height - targetHeight) / 2
-            rect = CGRect(x: 0, y: y, width: imageSize.width, height: targetHeight)
+        // Remove all inputs and outputs
+        for input in captureSession.inputs {
+            captureSession.removeInput(input)
         }
         
-        guard let croppedImage = imageToProcess.cgImage?.cropping(to: rect) else {
-            return imageToProcess
+        for output in captureSession.outputs {
+            captureSession.removeOutput(output)
         }
         
-        return UIImage(cgImage: croppedImage, scale: imageToProcess.scale, orientation: .up)
+        captureSession.commitConfiguration()
+        
+        // Mark as not configured so we can reconfigure
+        self.isConfigured = false
+        
+        // Reconfigure from scratch
+        Task {
+            await configure()
+        }
     }
     
-    private func fixImageOrientation(_ image: UIImage) -> UIImage {
+    // Crop image to match the preview area, then crop specific amounts from top and bottom
+    private func cropImageToPreviewAspectRatio(_ image: UIImage) -> UIImage {
+        print("Starting precise two-step cropping process")
+        
+        // STEP 1: Handle image orientation to ensure proper coordinates
+        let orientationCorrectedImage = correctImageOrientation(image)
+        print("Original image size after orientation correction: \(orientationCorrectedImage.size)")
+        
+        // STEP 1: Crop to exact device preview dimensions
+        // Calculate the visible preview area (screen minus UI elements)
+        let screenSize = UIScreen.main.bounds.size
+        let visibleHeight = screenSize.height - headerHeight - controlBarHeight
+        let visibleArea = CGSize(width: screenSize.width, height: visibleHeight)
+        print("Device screen size: \(screenSize)")
+        print("Visible preview area: \(visibleArea)")
+        
+        // Get image dimensions
+        let imageWidth = orientationCorrectedImage.size.width
+        let imageHeight = orientationCorrectedImage.size.height
+        print("Image dimensions: \(imageWidth) × \(imageHeight)")
+        
+        // Calculate the scaling factor to match device dimensions
+        let widthRatio = imageWidth / visibleArea.width
+        let heightRatio = imageHeight / visibleArea.height
+        let scaleFactor = max(widthRatio, heightRatio)
+        
+        // Calculate dimensions of the area we need to crop to
+        let cropWidth = visibleArea.width * scaleFactor
+        let cropHeight = visibleArea.height * scaleFactor
+        
+        // Calculate offsets to center the crop
+        let xOffset = (imageWidth - cropWidth) / 2
+        let yOffset = (imageHeight - cropHeight) / 2
+        
+        let deviceCropRect = CGRect(
+            x: xOffset,
+            y: yOffset,
+            width: cropWidth,
+            height: cropHeight
+        )
+        
+        print("First crop to match device preview: \(deviceCropRect)")
+        
+        // Apply the first crop (to match device preview dimensions)
+        guard let deviceCroppedImage = cropImage(orientationCorrectedImage, toRect: deviceCropRect) else {
+            print("Warning: First cropping stage failed, using original image")
+            return orientationCorrectedImage
+        }
+        
+        print("After first crop (matches device preview): \(deviceCroppedImage.size)")
+        
+        // STEP 2: Crop specific percentages from top and bottom
+        let afterFirstCropHeight = deviceCroppedImage.size.height
+        let afterFirstCropWidth = deviceCroppedImage.size.width
+        
+        // Calculate actual pixels to crop
+        let topPixels = afterFirstCropHeight * topCropPercentage
+        let bottomPixels = afterFirstCropHeight * bottomCropPercentage
+        let remainingHeight = afterFirstCropHeight - topPixels - bottomPixels
+        
+        print("Cropping \(topCropPercentage * 100)% (\(topPixels) pixels) from top")
+        print("Cropping \(bottomCropPercentage * 100)% (\(bottomPixels) pixels) from bottom")
+        print("Remaining height: \(remainingHeight) pixels")
+        
+        // Create the second crop rectangle
+        let secondCropRect = CGRect(
+            x: 0,
+            y: topPixels,
+            width: afterFirstCropWidth,
+            height: remainingHeight
+        )
+        
+        print("Second crop (removes top/bottom percentages): \(secondCropRect)")
+        
+        // Apply the second crop (top and bottom percentages)
+        guard let finalImage = cropImage(deviceCroppedImage, toRect: secondCropRect) else {
+            print("Warning: Second cropping stage failed, using device-cropped image")
+            return deviceCroppedImage
+        }
+        
+        print("Final image after both crops: \(finalImage.size)")
+        return finalImage
+    }
+    
+    // Helper method to safely crop an image with a rect
+    private func cropImage(_ image: UIImage, toRect rect: CGRect) -> UIImage? {
+        // Ensure crop rect is within image bounds
+        let imageRect = CGRect(origin: .zero, size: image.size)
+        let validRect = imageRect.intersection(rect)
+        
+        if validRect.isEmpty || validRect.width <= 0 || validRect.height <= 0 {
+            print("Error: Invalid crop rectangle: \(rect) for image size: \(image.size)")
+            return nil
+        }
+        
+        // Perform actual cropping via CoreGraphics
+        if let cgImage = image.cgImage?.cropping(to: validRect) {
+            return UIImage(cgImage: cgImage, scale: image.scale, orientation: .up)
+        }
+        
+        print("Error: CGImage cropping failed")
+        return nil
+    }
+    
+    // Helper method to correct image orientation
+    private func correctImageOrientation(_ image: UIImage) -> UIImage {
+        // If the image orientation is already up, no need to modify
         if image.imageOrientation == .up {
             return image
         }
         
+        print("Correcting image orientation from: \(image.imageOrientation.rawValue)")
+        
+        // Create drawing context to normalize orientation
         UIGraphicsBeginImageContextWithOptions(image.size, false, image.scale)
         image.draw(in: CGRect(origin: .zero, size: image.size))
-        let normalizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        let normalizedImage = UIGraphicsGetImageFromCurrentImageContext()!
         UIGraphicsEndImageContext()
         
-        return normalizedImage ?? image
+        print("Image orientation corrected")
+        return normalizedImage
     }
     
     // Add this method
@@ -225,23 +359,63 @@ class CameraManager: NSObject {
             }
         }
     }
+    
+    // A method to forcefully restart the camera session if needed
+    func restartCameraSession() {
+        print("Restarting camera session...")
+        
+        // First stop the session
+        if captureSession.isRunning {
+            captureSession.stopRunning()
+        }
+        
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+            
+            // Wait a moment before restarting
+            try? await Task.sleep(for: .seconds(0.5))
+            
+            // Simply start the session again without reconfiguring
+            // Do NOT attempt to re-add inputs or outputs
+            if !self.captureSession.isRunning {
+                self.captureSession.startRunning()
+                print("Camera session restarted: \(self.captureSession.isRunning)")
+            }
+        }
+    }
 }
 
 extension CameraManager: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        print("Photo capture completed")
+        
         if let error = error {
             self.error = .captureFailed
             print("Error capturing photo: \(error)")
             return
         }
         
-        guard let imageData = photo.fileDataRepresentation(),
-              let image = UIImage(data: imageData) else {
+        guard let imageData = photo.fileDataRepresentation() else {
+            print("Failed to get image data representation")
             self.error = .captureFailed
             return
         }
         
+        guard let image = UIImage(data: imageData) else {
+            print("Failed to create UIImage from image data")
+            self.error = .captureFailed
+            return
+        }
+        
+        print("Successfully created image, size: \(image.size)")
+        
         // Crop the image to match the preview
-        capturedImage = cropImageToPreviewAspectRatio(image)
+        let processedImage = cropImageToPreviewAspectRatio(image)
+        
+        // Update on main thread to ensure UI updates properly
+        DispatchQueue.main.async { [weak self] in
+            print("Setting captured image on main thread")
+            self?.capturedImage = processedImage
+        }
     }
 }

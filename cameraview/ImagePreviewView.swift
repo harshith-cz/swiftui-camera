@@ -6,12 +6,16 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ImagePreviewView: View {
     let image: UIImage
     let onRetake: () -> Void
     let onSave: (UIImage) -> Void
     var cameraManager: CameraManager
+    
+    // Fixed 4:3 aspect ratio
+    private let previewAspectRatio: CGFloat = 4.0 / 3.0
     
     var body: some View {
         ZStack {
@@ -20,16 +24,26 @@ struct ImagePreviewView: View {
             VStack {
                 Spacer()
                 
+                // Display the image with 4:3 aspect ratio
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(4/3, contentMode: .fit)  // Force 4:3 ratio
+                    .aspectRatio(previewAspectRatio, contentMode: .fit)  // Force 4:3 ratio
                     .frame(maxWidth: .infinity)
+                    .background(Color.black.opacity(0.3))
+                    .onAppear {
+                        // Debug info on appear
+                        print("Image preview appeared")
+                        print("Image size: \(image.size)")
+                        print("Aspect ratio: \(image.size.width / image.size.height)")
+                        print("Using 4:3 aspect ratio for display")
+                    }
                 
                 Spacer()
                 
                 HStack(spacing: 60) {
                     // Retake button
                     Button(action: {
+                        print("Retake button tapped")
                         cameraManager.resetSession()
                         onRetake()
                     }) {
@@ -42,7 +56,10 @@ struct ImagePreviewView: View {
                     }
                     
                     // Save button
-                    Button(action: { onSave(image) }) {
+                    Button(action: { 
+                        print("Save button tapped")
+                        onSave(image) 
+                    }) {
                         Image(systemName: "checkmark")
                             .font(.system(size: 24))
                             .foregroundColor(.white)

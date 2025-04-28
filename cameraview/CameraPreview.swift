@@ -6,27 +6,46 @@
 //
 
 import SwiftUI
-import UIKit
 import AVFoundation
+import UIKit
 
+// This is the SwiftUI wrapper for our UIKit camera preview
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    var headerHeight: CGFloat = 0
+    var controlBarHeight: CGFloat = 0
     
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: UIScreen.main.bounds)
+    // Create the UIView
+    func makeUIView(context: Context) -> PreviewView {
+        let view = PreviewView()
         view.backgroundColor = .black
+        view.previewLayer.session = session
         
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.frame = view.bounds
-        previewLayer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(previewLayer)
+        // Configure the preview layer
+        view.previewLayer.videoGravity = .resizeAspectFill
+        view.previewLayer.connection?.videoOrientation = .portrait
         
         return view
     }
     
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    // Update the view
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        // Not needed for this implementation
+    }
 }
 
+// A specialized UIView subclass for camera preview
+class PreviewView: UIView {
+    override class var layerClass: AnyClass {
+        return AVCaptureVideoPreviewLayer.self
+    }
+    
+    var previewLayer: AVCaptureVideoPreviewLayer {
+        return layer as! AVCaptureVideoPreviewLayer
+    }
+}
+
+// Focus indicator that shows where the user tapped to focus
 struct FocusIndicator: View {
     var position: CGPoint
     @State private var isAnimating = false
